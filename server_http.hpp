@@ -2,6 +2,7 @@
 #define SERVER_HTTP_HPP
 
 #include "utility.hpp"
+#include <condition_variable>
 #include <functional>
 #include <iostream>
 #include <map>
@@ -51,8 +52,6 @@ namespace SimpleWeb {
     class Session;
 
   public:
-    virtual ~ServerBase() {}
-
     class Response : public std::enable_shared_from_this<Response>, public std::ostream {
       friend class ServerBase<socket_type>;
       friend class Server<socket_type>;
@@ -262,10 +261,11 @@ namespace SimpleWeb {
     class Session {
     public:
       Session(const std::shared_ptr<ServerBase<socket_type>> &server, const std::shared_ptr<socket_type> &socket)
-          : server(server), socket(socket), request(new Request(*this->socket)) {}
+          : server(server), socket(socket), socket_close_mutex(new std::mutex()), request(new Request(*this->socket)) {}
 
       std::shared_ptr<ServerBase<socket_type>> server;
       std::shared_ptr<socket_type> socket;
+      std::shared_ptr<std::mutex> socket_close_mutex;
       std::shared_ptr<Request> request;
 
       std::unique_ptr<asio::deadline_timer> timer;
@@ -279,11 +279,13 @@ namespace SimpleWeb {
         timer = std::unique_ptr<asio::deadline_timer>(new asio::deadline_timer(socket->get_io_service()));
         timer->expires_from_now(boost::posix_time::seconds(seconds));
         auto socket = this->socket;
-        timer->async_wait([socket](const error_code &ec) {
+        auto socket_close_mutex = this->socket_close_mutex;
+        timer->async_wait([socket, socket_close_mutex](const error_code &ec) {
           if(!ec) {
             error_code ec;
+            std::unique_lock<std::mutex> lock(*socket_close_mutex); // the following operations seems to be needed to run sequentially
             socket->lowest_layer().shutdown(asio::ip::tcp::socket::shutdown_both, ec);
-            socket->lowest_layer().close();
+            socket->lowest_layer().close(ec);
           }
         });
       }
@@ -341,6 +343,9 @@ namespace SimpleWeb {
 
     std::function<void(std::shared_ptr<socket_type>, std::shared_ptr<typename ServerBase<socket_type>::Request>)> on_upgrade;
 
+    /// If you have your own asio::io_service, store its pointer here before running start().
+    std::shared_ptr<asio::io_service> io_service;
+
     virtual void start() {
       if(!io_service) {
         io_service = std::make_shared<asio::io_service>();
@@ -381,20 +386,36 @@ namespace SimpleWeb {
         //Wait for the rest of the threads, if any, to finish as well
         for(auto &t : threads)
           t.join();
+
+        std::unique_lock<std::mutex> lock(stopped_mutex);
+        stopped_sync.notify_one();
       }
     }
 
+    /// Stop accepting new requests, and close current sessions. Blocks until all sessions are closed.
     void stop() {
-      acceptor->close();
-      if(internal_io_service)
-        io_service->stop();
+      if(acceptor) {
+        acceptor->close();
+        if(internal_io_service) {
+          io_service->stop();
+          std::unique_lock<std::mutex> lock(stopped_mutex);
+          while(!io_service->stopped())
+            stopped_sync.wait(lock);
+        }
+        else {
+          //TODO
+        }
+      }
     }
 
-    /// If you have your own asio::io_service, store its pointer here before running start().
-    std::shared_ptr<asio::io_service> io_service;
+    virtual ~ServerBase() {
+      stop();
+    }
 
   protected:
     bool internal_io_service = false;
+    std::mutex stopped_mutex;
+    std::condition_variable stopped_sync;
 
     std::unique_ptr<asio::ip::tcp::acceptor> acceptor;
     std::vector<std::thread> threads;
@@ -547,7 +568,8 @@ namespace SimpleWeb {
 
         if(!ec) {
           asio::ip::tcp::no_delay option(true);
-          session->socket->set_option(option);
+          error_code ec;
+          session->socket->set_option(option, ec);
 
           this->read_request_and_content(session);
         }

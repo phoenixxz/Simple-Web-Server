@@ -222,23 +222,23 @@ int main() {
 
   //Client examples
   //Second create() parameter set to false: no certificate verification
-  auto client = HttpsClient::create("localhost:8080", false);
+  HttpsClient client("localhost:8080", false);
 
   // synchronous request examples
-  auto r1 = client->request("GET", "/match/123");
+  auto r1 = client.request("GET", "/match/123");
   cout << r1->content.rdbuf() << endl; // Alternatively, use the convenience function r1->content.string()
 
   string json_string = "{\"firstName\": \"John\",\"lastName\": \"Smith\",\"age\": 25}";
-  auto r2 = client->request("POST", "/string", json_string);
+  auto r2 = client.request("POST", "/string", json_string);
   cout << r2->content.rdbuf() << endl;
 
   // asynchronous request example
-  client->request("POST", "/json", json_string, [](shared_ptr<HttpsClient::Response> response, const SimpleWeb::error_code &ec) {
+  client.request("POST", "/json", json_string, [](shared_ptr<HttpsClient::Response> response, const SimpleWeb::error_code &ec) {
     if(!ec)
       cout << response->content.rdbuf() << endl;
   });
-  client->io_service->reset(); // needed because the io_service has been run already in the synchronous examples
-  client->io_service->run();
+  client.io_service->reset(); // needed because the io_service has been run already in the synchronous examples
+  client.io_service->run();
 
   server_thread.join();
 }

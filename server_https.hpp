@@ -63,7 +63,8 @@ namespace SimpleWeb {
 
         if(!ec) {
           asio::ip::tcp::no_delay option(true);
-          session->socket->lowest_layer().set_option(option);
+          error_code ec;
+          session->socket->lowest_layer().set_option(option, ec);
 
           session->set_timeout(config.timeout_request);
           session->socket->async_handshake(asio::ssl::stream_base::server, [this, session](const error_code &ec) {
